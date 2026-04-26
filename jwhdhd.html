@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Horror Labyrinth</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; touch-action: none; width: 100vw; height: 100vh; font-family: sans-serif; }
+        canvas { display: block; width: 100% !important; height: 100% !important; }
+        
+        #noise-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: url('https://upload.wikimedia.org/wikipedia/commons/7/76/Noise_600x600.png');
+            opacity: 0.08; pointer-events: none; z-index: 50;
+            animation: noise-anim 0.2s infinite steps(4);
+        }
+        #vignette {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            box-shadow: inset 0 0 150px rgba(0,0,0,0.9); pointer-events: none; z-index: 40;
+        }
+        @keyframes noise-anim {
+            0% { transform: translate(0,0); }
+            50% { transform: translate(-5%, -5%); }
+            100% { transform: translate(5%, 5%); }
+        }
+
+        #start-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; display: flex; justify-content: center; align-items: center; z-index: 500;
+        }
+        #start-btn {
+            padding: 20px 40px; background: #111; color: red; border: 2px solid red;
+            cursor: pointer; font-size: 24px; font-weight: bold; font-family: 'Courier New', Courier, monospace;
+        }
+
+        #touch-zones { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; z-index: 100; }
+        #move-zone { width: 50%; height: 100%; position: relative; }
+        #look-zone { width: 50%; height: 100%; }
+        #joy-base { position: absolute; width: 90px; height: 90px; background: rgba(255,255,255,0.05); border: 2px solid rgba(255,255,255,0.2); border-radius: 50%; display: none; pointer-events: none; }
+        #joy-stick { position: absolute; top: 25px; left: 25px; width: 40px; height: 40px; background: #fff; opacity: 0.3; border-radius: 50%; }
+        
+        #game-over { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); color: red; display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 300; }
+        #restart-btn, .ui-btn { padding: 15px 30px; background: #300; color: white; border: 2px solid red; cursor: pointer; font-size: 18px; margin-top: 10px; display: inline-block; }
+
+        #interact-ui { position: fixed; bottom: 20%; left: 50%; transform: translateX(-50%); display: none; z-index: 150; }
+        #dialog-screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: url('wall2.jpg') center/cover no-repeat; display: none; z-index: 400; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 50px; }
+        #person-img { height: 60%; margin-bottom: 20px; filter: drop-shadow(0 0 20px #000); }
+        #dialog-box { background: rgba(0,0,0,0.85); color: white; padding: 20px; border: 1px solid #555; width: 80%; max-width: 600px; text-align: center; font-size: 18px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+        
+        @media (orientation: portrait) { #ui-hint { display: flex; } }
+        #ui-hint { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; color: #fff; z-index: 200; justify-content: center; align-items: center; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="ui-hint">Пожалуйста, переверните устройство горизонтально</div>
+    
+    <div id="start-screen"><button id="start-btn">НАЧАТЬ ИГРУ</button></div>
+
+    <div id="noise-overlay"></div>
+    <div id="vignette"></div>
+    
+    <div id="game-over"><h1>ВЫ ПОГИБЛИ</h1><button id="restart-btn" onclick="location.reload()">НАЧАТЬ ЗАНОВО</button></div>
+    <div id="interact-ui"><button class="ui-btn" id="btn-interact">ГОВОРИТЬ</button></div>
+    
+    <div id="dialog-screen">
+        <img src="person1.png" id="person-img">
+        <div id="dialog-box">
+            </div>
+    </div>
+
+    <div id="touch-zones"><div id="move-zone"></div><div id="look-zone"></div></div>
+    <div id="joy-base"><div id="joy-stick"></div></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        document.getElementById('start-btn').addEventListener('click', () => {
+            const doc = document.documentElement;
+            if (doc.requestFullscreen) doc.requestFullscreen();
+            else if (doc.webkitRequestFullscreen) doc.webkitRequestFullscreen();
+            
+            setTimeout(() => {
+                if (screen.orientation && screen.orientation.lock) {
+                    screen.orientation.lock('landscape').catch(e => console.log("Блокировка", e));
+                }
+            }, 150);
+
+            document.getElementById('start-screen').style.display = 'none';
+            if (THREE.AudioContext.getContext().state === 'suspended') {
+                THREE.AudioContext.getContext().resume();
+            }
+        });
+
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x000000, 0.12);
+        const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+        
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 0.9;
+        document.body.appendChild(renderer.domElement);
+
+        const flashlight = new THREE.SpotLight(0xfff0dd, 100);
+        flashlight.position.set(0, 0.5, 0);
+        flashlight.angle = 0.55; flashlight.penumbra = 0.5;
+        flashlight.decay = 1.5; flashlight.distance = 25;
+        flashlight.castShadow = true;
+        flashlight.shadow.mapSize.width = 1024;
+        flashlight.shadow.mapSize.height = 1024;
+        flashlight.shadow.camera.near = 0.5;
+        flashlight.shadow.camera.far = 25;
+        flashlight.shadow.focus = 1;
+        camera.add(flashlight);
+        flashlight.target.position.set(0, 0.5, -1);
+        camera.add(flashlight.target);
+        scene.add(camera);
+        
+        scene.add(new THREE.AmbientLight(0x0a0a0a, 0.3));
+
+        const loader = new THREE.TextureLoader();
+        const wallMat = new THREE.MeshStandardMaterial({ map: loader.load('wall.jpg'), roughness: 0.8 });
+        
+        const floorTex = loader.load('floor.jpg');
+        floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping; floorTex.repeat.set(20, 20);
+        const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.9 });
+
+        const ceilTex = loader.load('ceiling.jpg');
+        ceilTex.wrapS = ceilTex.wrapT = THREE.RepeatWrapping; ceilTex.repeat.set(20, 20);
+        const ceilMat = new THREE.MeshStandardMaterial({ map: ceilTex, roughness: 1.0 });
+
+        const map = [
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+            [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1],
+            [1,0,1,1,1,0,1,0,1,1,1,1,1,1,0,1],
+            [1,0,1,0,0,0,0,0,1,0,0,0,0,1,0,1],
+            [1,0,1,0,1,1,1,1,1,0,1,1,0,1,0,1],
+            [1,0,0,0,1,0,0,0,0,0,1,0,0,0,0,1],
+            [1,1,1,0,1,0,1,1,1,1,1,0,1,1,1,1],
+            [1,0,0,0,0,0,1,0,0,0,0,0,1,0,0,1],
+            [1,0,1,1,1,1,1,0,1,1,1,0,1,0,1,1],
+            [1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1],
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+        ];
+        const walls = [];
+        const emptyTiles = [];
+        const UNIT = 4;
+
+        map.forEach((row, z) => {
+            row.forEach((v, x) => {
+                if(v === 1) {
+                    const wall = new THREE.Mesh(new THREE.BoxGeometry(UNIT, UNIT, UNIT), wallMat);
+                    wall.position.set(x*UNIT, UNIT/2, z*UNIT);
+                    wall.castShadow = true;
+                    wall.receiveShadow = true;
+                    scene.add(wall);
+                    walls.push(new THREE.Box3().setFromObject(wall));
+                } else { emptyTiles.push({x: x*UNIT, z: z*UNIT}); }
+            });
+        });
+
+        const floor = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), floorMat);
+        floor.rotation.x = -Math.PI/2; floor.position.set(30, 0, 30); 
+        floor.receiveShadow = true; scene.add(floor);
+        
+        const ceil = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), ceilMat);
+        ceil.position.set(30, UNIT, 30); ceil.rotation.x = Math.PI/2; 
+        ceil.receiveShadow = true; scene.add(ceil);
+
+        const monster = new THREE.Sprite(new THREE.SpriteMaterial({ map: loader.load('monster1.png') }));
+        monster.scale.set(3, 3, 1); monster.position.y = 1.5;
+        const spawnMonster = emptyTiles.filter(t => t.x !== UNIT || t.z !== UNIT);
+        const smp = spawnMonster[Math.floor(Math.random() * spawnMonster.length)];
+        monster.position.set(smp.x, 1.5, smp.z); scene.add(monster);
+
+        const person = new THREE.Sprite(new THREE.SpriteMaterial({ map: loader.load('person1.png') }));
+        person.scale.set(2.5, 2.5, 1); person.position.y = 1.25;
+        const spawnPerson = emptyTiles.filter(t => (t.x !== smp.x || t.z !== smp.z) && (t.x !== UNIT));
+        const spp = spawnPerson[Math.floor(Math.random() * spawnPerson.length)];
+        person.position.set(spp.x, 1.25, spp.z); scene.add(person);
+
+        const composer = new EffectComposer(renderer);
+        const renderPass = new RenderPass(scene, camera);
+        composer.addPass(renderPass);
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.35, 0.4, 0.85);
+        composer.addPass(bloomPass);
+
+        const listener = new THREE.AudioListener(); camera.add(listener);
+        const ambientMusic = new THREE.Audio(listener);
+        const monsterChaseMusic = new THREE.Audio(listener);
+        const audioLoader = new THREE.AudioLoader();
+        audioLoader.load('music.mp3', (b) => { ambientMusic.setBuffer(b); ambientMusic.setLoop(true); ambientMusic.setVolume(0.3); });
+        audioLoader.load('zvukm.mp3', (b) => { monsterChaseMusic.setBuffer(b); monsterChaseMusic.setLoop(true); monsterChaseMusic.setVolume(0.5); });
+
+        let moveData = { x: 0, y: 0, active: false, id: null };
+        let lookData = { lat: 0, lon: -90, prevX: 0, prevY: 0, id: null };
+        let isGameOver = false, isChasing = false, inDialog = false;
+
+        // --- НОВАЯ СИСТЕМА ДИАЛОГОВ ---
+        const dialogTree = {
+            start: {
+                text: "Ты... ты тоже застрял здесь?",
+                options: [
+                    { text: "Кто ты?", next: "who" },
+                    { text: "Где мы?", next: "where" },
+                    { text: "Как отсюда выбраться?", next: "escape" },
+                    { text: "Уйти", action: "close" }
+                ]
+            },
+            who: {
+                text: "Я уже не помню своего имени. Я здесь слишком долго. Избегай темноты...",
+                options: [
+                    { text: "Что скрывается в темноте?", next: "monster" },
+                    { text: "Вернуться", next: "start" }
+                ]
+            },
+            where: {
+                text: "Это место постоянно меняется. Оно словно живое. Но выхода я не видел.",
+                options: [
+                    { text: "Звучит жутко.", next: "start" }
+                ]
+            },
+            monster: {
+                text: "Оно слышит твои шаги. Если услышишь его крики и рев то беги без оглядки. Оно уже рядом.",
+                options: [
+                    { text: "Спасибо за предупреждение.", action: "close" },
+                    { text: "Я хочу спросить другое.", next: "start" }
+                ]
+            },
+            escape: {
+                text: "Выхода нет. По крайней мере, я его не нашел. Но, может, тебе повезет больше.",
+                options: [
+                    { text: "Я найду выход.", action: "close" },
+                    { text: "Вернуться назад", next: "start" }
+                ]
+            }
+        };
+
+        window.renderDialog = (nodeId) => {
+            const node = dialogTree[nodeId];
+            const box = document.getElementById('dialog-box');
+            let html = `<p id="dialog-text" style="margin: 0 0 15px 0;">${node.text}</p>`;
+            
+            node.options.forEach(opt => {
+                if(opt.action === 'close') {
+                    html += `<button class="ui-btn" style="border-color: #555; width: 100%;" onclick="closeDialog()">${opt.text}</button>`;
+                } else {
+                    html += `<button class="ui-btn" style="width: 100%;" onclick="renderDialog('${opt.next}')">${opt.text}</button>`;
+                }
+            });
+            box.innerHTML = html;
+        };
+
+        window.closeDialog = () => { 
+            inDialog = false; 
+            document.getElementById('dialog-screen').style.display = 'none'; 
+        };
+        
+        document.getElementById('btn-interact').onclick = () => { 
+            inDialog = true; 
+            document.getElementById('dialog-screen').style.display = 'flex'; 
+            renderDialog('start'); 
+        };
+        // -----------------------------
+
+        document.getElementById('move-zone').ontouchstart = (e) => { 
+            if(isGameOver || inDialog) return; 
+            if(!ambientMusic.isPlaying && !isChasing) ambientMusic.play();
+            moveData.active = true; moveData.id = e.changedTouches[0].identifier;
+            document.getElementById('joy-base').style.display = 'block';
+            document.getElementById('joy-base').style.left = e.changedTouches[0].clientX - 45 + 'px';
+            document.getElementById('joy-base').style.top = e.changedTouches[0].clientY - 45 + 'px';
+        };
+
+        window.addEventListener('touchmove', (e) => {
+            if(inDialog) return;
+            for(let t of e.changedTouches) {
+                if(moveData.id === t.identifier) {
+                    const r = document.getElementById('joy-base').getBoundingClientRect();
+                    let dx = t.clientX - (r.left + 45), dy = t.clientY - (r.top + 45);
+                    let d = Math.min(Math.sqrt(dx*dx+dy*dy), 35), a = Math.atan2(dy, dx);
+                    moveData.x = Math.cos(a)*d/35; moveData.y = Math.sin(a)*d/35;
+                    document.getElementById('joy-stick').style.transform = `translate(${Math.cos(a)*d}px,${Math.sin(a)*d}px)`;
+                }
+                if(lookData.id === t.identifier) {
+                    lookData.lon -= (t.clientX - lookData.prevX) * 0.25; lookData.lat -= (t.clientY - lookData.prevY) * 0.25;
+                    lookData.lat = Math.max(-85, Math.min(85, lookData.lat));
+                    lookData.prevX = t.clientX; lookData.prevY = t.clientY;
+                }
+            }
+        });
+        document.getElementById('look-zone').ontouchstart = (e) => { lookData.id = e.changedTouches[0].identifier; lookData.prevX = e.changedTouches[0].clientX; lookData.prevY = e.changedTouches[0].clientY; };
+        window.ontouchend = (e) => { for(let t of e.changedTouches) { if(t.identifier === moveData.id) { moveData.active = false; document.getElementById('joy-base').style.display='none'; } if(t.identifier === lookData.id) lookData.id = null; }};
+
+        camera.position.set(UNIT, 1.6, UNIT);
+
+        function animate() {
+            if(isGameOver) return;
+            requestAnimationFrame(animate);
+            if(!inDialog) {
+                const target = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - lookData.lat), THREE.MathUtils.degToRad(lookData.lon)).add(camera.position);
+                camera.lookAt(target);
+            }
+
+            const distM = monster.position.distanceTo(camera.position);
+            if(distM < 12) {
+                if(!isChasing) { isChasing = true; ambientMusic.stop(); if(monsterChaseMusic.buffer) monsterChaseMusic.play(); }
+                if(distM < 1.3) { isGameOver = true; document.getElementById('game-over').style.display='flex'; monsterChaseMusic.stop(); }
+                let d = new THREE.Vector3().subVectors(camera.position, monster.position); d.y=0; d.normalize();
+                let nx = monster.position.clone().setX(monster.position.x + d.x*0.04), nz = monster.position.clone().setZ(monster.position.z + d.z*0.04);
+                if(!walls.some(b => b.intersectsSphere(new THREE.Sphere(nx, 0.7)))) monster.position.x = nx.x;
+                if(!walls.some(b => b.intersectsSphere(new THREE.Sphere(nz, 0.7)))) monster.position.z = nz.z;
+            } else if(isChasing) { isChasing=false; monsterChaseMusic.stop(); ambientMusic.play(); }
+
+            const distP = person.position.distanceTo(camera.position);
+            document.getElementById('interact-ui').style.display = (distP < 3 && !inDialog) ? 'block' : 'none';
+
+            if(moveData.active && !inDialog) {
+                let f = new THREE.Vector3(); camera.getWorldDirection(f); f.y=0; f.normalize();
+                let r = new THREE.Vector3().crossVectors(camera.up, f).normalize();
+                let np = camera.position.clone().addScaledVector(f, -moveData.y*0.12).addScaledVector(r, -moveData.x*0.12);
+                if(!walls.some(b => b.intersectsSphere(new THREE.Sphere(np, 0.6)))) camera.position.copy(np);
+            }
+            
+            composer.render();
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
